@@ -1,0 +1,91 @@
+name: Reusable Deploy
+
+on:
+  # Called from application repositories via `uses: owner/repo/.github/workflows/...`.
+  workflow_call:
+    inputs:
+      # The container image tag expected by docker-compose via IMAGE_TAG env var.
+      image_tag:
+        description: Image tag to deploy
+        required: false
+        default: latest
+        type: string
+      # Compose file path in the caller repository.
+      compose_source:
+        description: Path to docker-compose file in the caller repository
+        required: false
+        default: deploy/docker-compose.yml
+        type: string
+      # Remote application directory. The compose file is copied here and deploy runs from here.
+      deploy_dir:
+        description: Remote app directory used for both copy target and deployment
+        required: false
+        default: /opt/app
+        type: string
+      # Compose filename as it should exist on the server.
+      compose_file:
+        description: Compose file name on remote host
+        required: false
+        default: docker-compose.yml
+        type: string
+      # Primary service to pull explicitly before full stack startup.
+      service_name:
+        description: Compose service to pull before bringing stack up
+        required: false
+        default: django
+        type: string
+    secrets:
+      host_ip:
+        description: Remote host IP or DNS name
+        required: true
+      host_ssh_private_key:
+        description: SSH private key for root or deploy user
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    # Needed for repository checkout and GHCR auth from the target host.
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # Required so `compose_source` can be copied from caller repo contents.
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      # Transfer compose file to the remote host.
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.host_ip }}
+          username: root
+          key: ${{ secrets.host_ssh_private_key }}
+          source: ${{ inputs.compose_source }}
+          target: ${{ format('{0}/', inputs.deploy_dir) }}
+          strip_components: 1
+
+      # Log into GHCR on the server, pull new image, restart stack, and prune old images.
+      - name: Run deploy
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          DEPLOY_DIR: ${{ inputs.deploy_dir }}
+          COMPOSE_FILE: ${{ inputs.compose_file }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+        with:
+          host: ${{ secrets.host_ip }}
+          username: root
+          key: ${{ secrets.host_ssh_private_key }}
+          envs: GITHUB_TOKEN,GITHUB_ACTOR,IMAGE_TAG,DEPLOY_DIR,COMPOSE_FILE,SERVICE_NAME
+          script: |
+            set -e
+            cd "$DEPLOY_DIR"
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            IMAGE_TAG=$IMAGE_TAG docker compose -f "$COMPOSE_FILE" pull "$SERVICE_NAME"
+            IMAGE_TAG=$IMAGE_TAG docker compose -f "$COMPOSE_FILE" up -d
+            docker image prune -f
