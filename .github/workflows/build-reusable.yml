@@ -69,10 +69,15 @@ jobs:
       - name: Resolve image tags
         id: tags
         run: |
-          echo "value=${{ inputs.image_name }}:${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          TAGS="${{ inputs.image_name }}:${{ inputs.image_tag }}"
+
           if [ "${{ inputs.push_latest }}" = "true" ]; then
-            echo "value=${{ inputs.image_name }}:latest" >> $GITHUB_OUTPUT
+            TAGS="$TAGS\n${{ inputs.image_name }}:latest"
           fi
+
+          echo "value<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$TAGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       # Build and push image with deterministic and rolling tags.
       - name: Build and push
